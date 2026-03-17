@@ -86,7 +86,7 @@ class TranslationFoldingRangeProvider implements vscode.FoldingRangeProvider {
 
 /**
  * グループのデコレーションを管理するクラス。
- * グループ先頭行の before に `<prefix> [N entries]` を表示する。
+ * グループ先頭行の after に `[N entries]` を表示する。
  * contentText 末尾の "\n" で後続行との間に改行を挿入する。
  */
 class GroupDecorationManager {
@@ -94,7 +94,7 @@ class GroupDecorationManager {
 
 	constructor() {
 		// スタイルは個別デコレーションの renderOptions で指定するため、
-		// ここでは before を定義せずシンプルに生成する
+		// ここでは after を定義せずシンプルに生成する
 		this.decorationType = vscode.window.createTextEditorDecorationType({});
 	}
 
@@ -107,14 +107,14 @@ class GroupDecorationManager {
 		const groups = collectGroups(editor.document);
 		const decorations: vscode.DecorationOptions[] = groups.map(g => {
 			const line = editor.document.lineAt(g.startLine);
-			// 行頭の範囲（0文字）に before デコレーションを付与する
-			const range = new vscode.Range(line.range.start, line.range.start);
+			// 行末の範囲（0文字）に after デコレーションを付与する
+			const range = new vscode.Range(line.range.end, line.range.end);
 			const entriesLabel = g.count === 1 ? '1 entry' : `${g.count} entries`;
 			return {
 				range,
 				renderOptions: {
-					before: {
-						contentText: `${g.prefix} [${entriesLabel}]\n`,
+					after: {
+						contentText: ` [${entriesLabel}]\n`,
 						color: new vscode.ThemeColor('editorLineNumber.foreground'),
 						fontStyle: 'italic',
 					},

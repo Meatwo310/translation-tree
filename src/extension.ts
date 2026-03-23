@@ -36,7 +36,7 @@ function collectGroups(document: vscode.TextDocument): Group[] {
 	let groupPrefix: string | null = null;
 	let groupCount = 0;
 
-	const pushGroup = (endLine: number) => {
+	const pushGroup = () => {
 		if (groupStart !== null && groupPrefix !== null && groupCount >= 1) {
 			groups.push({ prefix: groupPrefix, startLine: groupStart, count: groupCount });
 		}
@@ -52,7 +52,7 @@ function collectGroups(document: vscode.TextDocument): Group[] {
 		}
 
 		// プレフィックスが変わった -> 前のグループを確定
-		pushGroup(i - 1);
+		pushGroup();
 
 		if (prefix !== null) {
 			groupStart = i;
@@ -66,40 +66,50 @@ function collectGroups(document: vscode.TextDocument): Group[] {
 	}
 
 	// ファイル末尾で未確定のグループを確定
-	pushGroup(document.lineCount - 1);
+	pushGroup();
 
 	return groups;
 }
 
-class TranslationFoldingRangeProvider implements vscode.FoldingRangeProvider {
-	provideFoldingRanges(
-		document: vscode.TextDocument,
-		_context: vscode.FoldingContext,
-		_token: vscode.CancellationToken
-	): vscode.FoldingRange[] {
-		const groups = collectGroups(document);
-		return groups
-			.filter(g => g.count > 1)
-			.map(g => new vscode.FoldingRange(g.startLine, g.startLine + g.count - 1));
-	}
-}
-
-const FOLD_GROUP_COMMAND = 'translation-tree.foldGroup';
+const FOLD_COMMAND = 'translation-tree.fold';
+const UNFOLD_COMMAND = 'translation-tree.unfold';
 
 /**
  * Code Lens プロバイダ。
- * 各グループの startLine に、同じ行を起点とする全グループを深さ順に並べた
- * Code Lens を登録する。クリックすると対象グループの範囲を折りたたむ。
+ * 各グループの startLine に折りたたみ／展開ボタンを表示する。
+ * 状態（折りたたみ済みかどうか）を内部で管理し、ラベルを切り替える。
  *
- * 同一 startLine に複数グループが存在する場合（親子の重複）は、
- * プレフィックスのドット数（= 深さ）昇順でそれぞれ独立した CodeLens として返す。
+ * 折りたたみは FoldingRangeProvider の事前定義に依存せず、
+ * editor.createFoldingRangeFromSelection でその場で手動範囲を作成して行う。
  */
 class TranslationCodeLensProvider implements vscode.CodeLensProvider {
 	private readonly _onDidChangeCodeLenses = new vscode.EventEmitter<void>();
 	readonly onDidChangeCodeLenses = this._onDidChangeCodeLenses.event;
 
+	/** 折りたたみ済みグループのキー集合。キー形式: "startLine:endLine" */
+	private readonly foldedKeys = new Set<string>();
+
+	static groupKey(startLine: number, endLine: number): string {
+		return `${startLine}:${endLine}`;
+	}
+
 	refresh(): void {
 		this._onDidChangeCodeLenses.fire();
+	}
+
+	markFolded(key: string): void {
+		this.foldedKeys.add(key);
+		this._onDidChangeCodeLenses.fire();
+	}
+
+	markUnfolded(key: string): void {
+		this.foldedKeys.delete(key);
+		this._onDidChangeCodeLenses.fire();
+	}
+
+	/** ドキュメント編集時に行番号がずれるため、折りたたみ状態をリセットする */
+	clearFoldedKeys(): void {
+		this.foldedKeys.clear();
 	}
 
 	provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
@@ -108,27 +118,25 @@ class TranslationCodeLensProvider implements vscode.CodeLensProvider {
 		}
 
 		const groups = collectGroups(document).filter(g => g.count > 1);
-
-		// startLine でグループ化し、深さ（ドット数）昇順にソート
-		const byLine = new Map<number, Group[]>();
-		for (const g of groups) {
-			const list = byLine.get(g.startLine) ?? [];
-			list.push(g);
-			byLine.set(g.startLine, list);
-		}
-
 		const lenses: vscode.CodeLens[] = [];
-		for (const [startLine, lineGroups] of byLine) {
-			lineGroups.sort((a, b) =>
-				a.prefix.split('.').length - b.prefix.split('.').length
-			);
 
-			const range = new vscode.Range(startLine, 0, startLine, 0);
-			for (const g of lineGroups) {
+		for (const g of groups) {
+			const endLine = g.startLine + g.count - 1;
+			const key = TranslationCodeLensProvider.groupKey(g.startLine, endLine);
+			const isFolded = this.foldedKeys.has(key);
+			const range = new vscode.Range(g.startLine, 0, g.startLine, 0);
+
+			if (isFolded) {
+				lenses.push(new vscode.CodeLens(range, {
+					title: `▸ ${g.prefix} [${g.count}]`,
+					command: UNFOLD_COMMAND,
+					arguments: [g.startLine, endLine, key],
+				}));
+			} else {
 				lenses.push(new vscode.CodeLens(range, {
 					title: `▾ ${g.prefix} [${g.count}]`,
-					command: FOLD_GROUP_COMMAND,
-					arguments: [g.startLine, g.startLine + g.count - 1],
+					command: FOLD_COMMAND,
+					arguments: [g.startLine, endLine, key],
 				}));
 			}
 		}
@@ -138,39 +146,68 @@ class TranslationCodeLensProvider implements vscode.CodeLensProvider {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-	// Folding
-	const foldingProvider = new TranslationFoldingRangeProvider();
-	context.subscriptions.push(
-		vscode.languages.registerFoldingRangeProvider({ language: 'json' }, foldingProvider)
-	);
-
-	// Code Lens
+	// Code Lens（FoldingRangeProvider は登録しない）
 	const codeLensProvider = new TranslationCodeLensProvider();
 	context.subscriptions.push(
 		vscode.languages.registerCodeLensProvider({ language: 'json' }, codeLensProvider)
 	);
 
-	// ドキュメントが編集されたときに Code Lens を更新
+	// ドキュメントが編集されたときは行番号がずれる可能性があるため状態をリセット
 	context.subscriptions.push(
-		vscode.workspace.onDidChangeTextDocument(() => codeLensProvider.refresh())
+		vscode.workspace.onDidChangeTextDocument(() => {
+			codeLensProvider.clearFoldedKeys();
+			codeLensProvider.refresh();
+		})
 	);
 
-	// foldGroup コマンド: startLine を含む折りたたみ範囲を折りたたむ。
-	// editor.fold は selectionLines のカーソル行を起点に FoldingRangeProvider の
-	// 範囲を選んで折りたたむため、まずカーソルを startLine へ移動してから実行する。
+	// fold コマンド:
+	// 1. startLine〜endLine を選択
+	// 2. editor.createFoldingRangeFromSelection で手動折りたたみ範囲を登録
 	context.subscriptions.push(
 		vscode.commands.registerCommand(
-			FOLD_GROUP_COMMAND,
-			(startLine: number, _endLine: number) => {
+			FOLD_COMMAND,
+			async (startLine: number, endLine: number, key: string) => {
+				const editor = vscode.window.activeTextEditor;
+				if (!editor) {
+					return;
+				}
+				const startPos = new vscode.Position(startLine, 0);
+				const endPos = new vscode.Position(
+					endLine,
+					editor.document.lineAt(endLine).text.length
+				);
+				editor.selection = new vscode.Selection(startPos, endPos);
+
+				await vscode.commands.executeCommand('editor.createFoldingRangeFromSelection');
+				// await vscode.commands.executeCommand('editor.fold', {
+				// 	selectionLines: [startLine],
+				// });
+
+				codeLensProvider.markFolded(key);
+			}
+		)
+	);
+
+	// unfold コマンド:
+	// 1. カーソルを startLine へ移動
+	// 3. editor.removeManualFoldingRanges で手動範囲を削除
+	context.subscriptions.push(
+		vscode.commands.registerCommand(
+			UNFOLD_COMMAND,
+			async (startLine: number, _endLine: number, key: string) => {
 				const editor = vscode.window.activeTextEditor;
 				if (!editor) {
 					return;
 				}
 				const pos = new vscode.Position(startLine, 0);
 				editor.selection = new vscode.Selection(pos, pos);
-				vscode.commands.executeCommand('editor.fold', {
-					selectionLines: [startLine],
-				});
+
+				// await vscode.commands.executeCommand('editor.unfold', {
+				// 	selectionLines: [startLine],
+				// });
+				await vscode.commands.executeCommand('editor.removeManualFoldingRanges');
+
+				codeLensProvider.markUnfolded(key);
 			}
 		)
 	);

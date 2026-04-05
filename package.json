@@ -2,6 +2,9 @@
   "name": "compare-translations",
   "displayName": "compare-translations",
   "description": "",
+  "repository": {
+    "url": "https://github.com/Meatwo310/compare-translations"
+  },
   "version": "0.1.0",
   "engines": {
     "vscode": "^1.110.0"

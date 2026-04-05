@@ -13,11 +13,12 @@
     "onLanguage:json"
   ],
   "main": "./out/extension.js",
+  "l10n": "./l10n",
   "contributes": {
     "commands": [
       {
         "command": "translation-tree.setAsOriginal",
-        "title": "翻訳の比較対象として設定"
+        "title": "%command.setAsOriginal.title%"
       }
     ],
     "menus": {

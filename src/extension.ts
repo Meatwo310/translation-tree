@@ -84,7 +84,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			vscode.window.showInformationMessage(
-				`翻訳の比較対象を設定しました: ${path.basename(originalFilePath)}`
+				vscode.l10n.t('Set as translation reference: {0}', path.basename(originalFilePath))
 			);
 		}),
 		vscode.window.onDidChangeActiveTextEditor(editor => {
